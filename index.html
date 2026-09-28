@@ -2267,9 +2267,16 @@
                     formatResultNumbers();
 
                     const lockedCount = lockedResults.length;
-                    matchSource.innerText = lockedCount > 0
-                        ? `Hybrid (${lockedCount} pHash locked + Gemini)`
-                        : "Solved via Gemini";
+                    const geminiSucceeded = geminiDigits && geminiDigits.length >= 3;
+                    if (!geminiSucceeded) {
+                        matchSource.innerText = lockedCount > 0 
+                            ? `Local pHash Match (${lockedCount} locked, Gemini offline/exhausted)`
+                            : "Solved via Smart Local Match (Gemini quota exhausted)";
+                    } else {
+                        matchSource.innerText = lockedCount > 0
+                            ? `Hybrid (${lockedCount} pHash locked + Gemini)`
+                            : "Solved via Gemini";
+                    }
                 }
 
                 const totalSeconds = (performance.now() - startTime) / 1000;
@@ -2769,41 +2776,139 @@
             return canvas.toDataURL('image/png');
         }
 
-        async function computeMultiOrientationPHashes(dataUrl) {
-            const img = await loadImage(dataUrl);
-            const canvas = document.createElement('canvas');
-            canvas.width = 32; canvas.height = 32;
-            const ctx = canvas.getContext('2d');
-            const orientations = [
-                { rot: 0, flip: false },
-                { rot: 90, flip: false },
-                { rot: 180, flip: false },
-                { rot: 270, flip: false },
-                { rot: 0, flip: true }
-            ];
-            const hashes = [];
-            for (let opt of orientations) {
-                ctx.clearRect(0, 0, 32, 32);
-                ctx.save();
-                ctx.translate(16, 16);
-                ctx.rotate((opt.rot * Math.PI) / 180);
-                if (opt.flip) ctx.scale(-1, 1);
-                ctx.drawImage(img, -16, -16, 32, 32);
-                ctx.restore();
-                const imageData = ctx.getImageData(0, 0, 32, 32);
-                const gray = new Float32Array(1024);
-                for (let i = 0; i < 1024; i++) {
-                    gray[i] = 0.299 * imageData.data[i*4] + 0.587 * imageData.data[i*4+1] + 0.114 * imageData.data[i*4+2];
-                }
-                const dct = applyDCT(gray, 32);
-                const block = [];
-                for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) { if (x === 0 && y === 0) continue; block.push(dct[y * 32 + x]); }
-                const mean = block.reduce((a, b) => a + b, 0) / block.length;
-                let hash = "";
-                for (let val of block) hash += val > mean ? "1" : "0";
-                hashes.push(hash);
+        // In-memory feature caches to maximize Smart Match speed and eliminate redundant canvas processing
+        const smartFeatureCache = new Map();
+        const dictFeatureIndex = new Map();
+        const geminiKeyCooldownMap = new Map();
+
+        async function getOrComputeImageFeatures(dataUrl) {
+            if (!dataUrl) return null;
+            const cacheKey = dataUrl.length > 200 ? (dataUrl.substring(0, 120) + '_' + dataUrl.length) : dataUrl;
+            if (smartFeatureCache.has(cacheKey)) {
+                return smartFeatureCache.get(cacheKey);
             }
-            return hashes;
+
+            try {
+                const img = await loadImage(dataUrl);
+                const canvas = document.createElement('canvas');
+                canvas.width = 32; canvas.height = 32;
+                const ctx = canvas.getContext('2d');
+                const orientations = [
+                    { rot: 0, flip: false },
+                    { rot: 90, flip: false },
+                    { rot: 180, flip: false },
+                    { rot: 270, flip: false },
+                    { rot: 0, flip: true }
+                ];
+                const hashes = [];
+                let rSum = 0, gSum = 0, bSum = 0, count = 0;
+
+                for (let opt of orientations) {
+                    ctx.clearRect(0, 0, 32, 32);
+                    ctx.save();
+                    ctx.translate(16, 16);
+                    ctx.rotate((opt.rot * Math.PI) / 180);
+                    if (opt.flip) ctx.scale(-1, 1);
+                    ctx.drawImage(img, -16, -16, 32, 32);
+                    ctx.restore();
+                    const imageData = ctx.getImageData(0, 0, 32, 32);
+
+                    if (opt.rot === 0 && !opt.flip) {
+                        const data = imageData.data;
+                        for (let i = 0; i < data.length; i += 4) {
+                            if (data[i + 3] > 30) {
+                                rSum += data[i];
+                                gSum += data[i + 1];
+                                bSum += data[i + 2];
+                                count++;
+                            }
+                        }
+                    }
+
+                    const gray = new Float32Array(1024);
+                    for (let i = 0; i < 1024; i++) {
+                        gray[i] = 0.299 * imageData.data[i*4] + 0.587 * imageData.data[i*4+1] + 0.114 * imageData.data[i*4+2];
+                    }
+                    const dct = applyDCT(gray, 32);
+                    const block = [];
+                    for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) { if (x === 0 && y === 0) continue; block.push(dct[y * 32 + x]); }
+                    const mean = block.reduce((a, b) => a + b, 0) / block.length;
+                    let hash = "";
+                    for (let val of block) hash += val > mean ? "1" : "0";
+                    hashes.push(hash);
+                }
+
+                const color = count > 0 
+                    ? { r: Math.round(rSum / count), g: Math.round(gSum / count), b: Math.round(bSum / count) }
+                    : { r: 128, g: 128, b: 128 };
+
+                const features = {
+                    primaryHash: hashes[0],
+                    multiHashes: hashes,
+                    color
+                };
+
+                if (smartFeatureCache.size > 1200) {
+                    const firstKey = smartFeatureCache.keys().next().value;
+                    smartFeatureCache.delete(firstKey);
+                }
+                smartFeatureCache.set(cacheKey, features);
+                return features;
+            } catch (err) {
+                console.warn("Feature extraction fallback:", err);
+                const pHash = await computePHash(dataUrl);
+                return {
+                    primaryHash: pHash,
+                    multiHashes: [pHash],
+                    color: { r: 128, g: 128, b: 128 }
+                };
+            }
+        }
+
+        async function getOrComputeEntryFeatures(entry) {
+            if (!entry || !entry.id) return null;
+            const cached = dictFeatureIndex.get(entry.id);
+            if (cached && cached.variantCount === (entry.answers?.length || 0) && cached.targetHash === entry.targetHash) {
+                return cached;
+            }
+
+            let targetFeatures = null;
+            const targetImg = entry.targetImage || entry.target;
+            if (targetImg) {
+                targetFeatures = await getOrComputeImageFeatures(targetImg);
+            }
+
+            const variantFeatures = [];
+            if (entry.answers && entry.answers.length > 0) {
+                for (let ans of entry.answers) {
+                    const ansData = typeof ans === 'string' ? ans : ans.data;
+                    const ansHash = typeof ans === 'string' ? '' : (ans.hash || '');
+                    if (ansData) {
+                        const feat = await getOrComputeImageFeatures(ansData);
+                        if (feat) variantFeatures.push(feat);
+                    } else if (ansHash) {
+                        variantFeatures.push({
+                            primaryHash: ansHash,
+                            multiHashes: [ansHash],
+                            color: targetFeatures?.color || { r: 128, g: 128, b: 128 }
+                        });
+                    }
+                }
+            }
+
+            const entryData = {
+                targetHash: entry.targetHash,
+                targetFeatures,
+                variantFeatures,
+                variantCount: entry.answers?.length || 0
+            };
+            dictFeatureIndex.set(entry.id, entryData);
+            return entryData;
+        }
+
+        async function computeMultiOrientationPHashes(dataUrl) {
+            const feat = await getOrComputeImageFeatures(dataUrl);
+            return feat ? feat.multiHashes : [];
         }
 
         async function callGeminiForPuzzle(screenshot, targets, answers, pHashResults, lockedResults = []) {
@@ -2811,7 +2916,24 @@
             let availableKeys = [...geminiKeys];
             const envKey = (typeof process !== 'undefined' && process.env && process.env.GEMINI_API_KEY) ? process.env.GEMINI_API_KEY : '';
             if (availableKeys.length === 0 && envKey) availableKeys.push(envKey);
-            if (availableKeys.length === 0) throw new Error("No Gemini API keys available in pool.");
+            if (availableKeys.length === 0) return "000";
+
+            // Filter out keys currently on cooldown due to quota exhaustion
+            const now = Date.now();
+            const activeKeys = availableKeys.filter(k => {
+                const expiry = geminiKeyCooldownMap.get(k);
+                if (!expiry) return true;
+                if (now > expiry) {
+                    geminiKeyCooldownMap.delete(k);
+                    return true;
+                }
+                return false;
+            });
+
+            if (activeKeys.length === 0) {
+                if (debugContent) debugContent.innerHTML += `<div style="padding:4px 8px; background:rgba(234,179,8,0.15); border:1px solid rgba(234,179,8,0.3); border-radius:4px; font-size:9px; margin-top:4px; color:#facc15">All Gemini API keys are in cooldown (quota rate-limit). Falling back to smart local solver.</div>`;
+                return "000";
+            }
 
             const contents = { parts: [] };
 
@@ -2887,9 +3009,9 @@ Example: 132`;
 
             contents.parts.push({ text: prompt });
 
-            availableKeys.sort(() => Math.random() - 0.5);
+            activeKeys.sort(() => Math.random() - 0.5);
 
-            for (let apiKey of availableKeys) {
+            for (let apiKey of activeKeys) {
                 try {
                     const { GoogleGenAI } = await import("https://esm.sh/@google/genai");
                     const ai = new GoogleGenAI({ apiKey });
@@ -2901,6 +3023,12 @@ Example: 132`;
                             config: { temperature: 0.1 }
                         });
                     } catch (mErr) {
+                        const mErrStr = (mErr && mErr.message) ? mErr.message : String(mErr);
+                        if (mErrStr.includes("resource_exhausted") || mErrStr.includes("429") || mErrStr.includes("quota")) {
+                            console.warn("Gemini key quota exhausted/rate limited. Placing in 3-min cooldown.");
+                            geminiKeyCooldownMap.set(apiKey, Date.now() + 180000);
+                            continue;
+                        }
                         console.warn("Retrying with gemini-flash-latest:", mErr);
                         response = await ai.models.generateContent({
                             model: "gemini-flash-latest",
@@ -2913,7 +3041,13 @@ Example: 132`;
                     const digits = text.match(/[1-4]/g);
                     if (digits && digits.length >= 3) return digits.slice(0, 3).join("");
                 } catch (err) {
-                    console.error("Gemini Error:", err);
+                    const errStr = (err && err.message) ? err.message : String(err);
+                    if (errStr.includes("resource_exhausted") || errStr.includes("429") || errStr.includes("quota")) {
+                        console.warn("Gemini key quota exhausted/rate limited:", apiKey.substring(0, 8) + "...");
+                        geminiKeyCooldownMap.set(apiKey, Date.now() + 180000);
+                    } else {
+                        console.error("Gemini Error:", err);
+                    }
                 }
             }
             return "000";
@@ -3190,35 +3324,8 @@ Example: 132`;
             }
 
             try {
-                const answerHashes = await computeMultiOrientationPHashes(answerDataUrl);
-                const candidates = [];
-
-                for (let entry of dictionary) {
-                    let bestSim = 0;
-                    if (entry.targetHash) {
-                        for (let ah of answerHashes) {
-                            const sim = compareHashes(ah, entry.targetHash);
-                            if (sim > bestSim) bestSim = sim;
-                        }
-                    }
-                    if (entry.answers && entry.answers.length > 0) {
-                        for (let ans of entry.answers) {
-                            const ansHash = typeof ans === 'string' ? '' : (ans.hash || '');
-                            if (ansHash) {
-                                for (let ah of answerHashes) {
-                                    const sim = compareHashes(ah, ansHash);
-                                    if (sim > bestSim) bestSim = sim;
-                                }
-                            }
-                        }
-                    }
-
-                    if (bestSim > 0) {
-                        candidates.push({ entry, similarity: bestSim });
-                    }
-                }
-
-                candidates.sort((a, b) => b.similarity - a.similarity);
+                const matchResult = await matchAnswerToDictionary(answerDataUrl);
+                const candidates = matchResult.candidates || [];
 
                 if (candidates.length === 0 || candidates[0].similarity < 48) {
                     suggestionBanner.classList.add('hidden');
@@ -3373,14 +3480,7 @@ Example: 132`;
                         localStorage.setItem('screenshot_audit_cache', JSON.stringify(Array.from(screenshotAuditMap.values())));
                     } catch (e) {}
 
-                    if (db) {
-                        try {
-                            const allRecords = Array.from(screenshotAuditMap.values()).slice(-200);
-                            await db.collection('config').doc('screenshotAudit').set({ records: allRecords }, { merge: true });
-                        } catch (err) {
-                            console.warn("Failed to sync audit metadata to Firebase:", err);
-                        }
-                    }
+                    scheduleAuditSync();
                 }
                 document.getElementById('entry-name').value = "";
                 selectExistingMonster("");
@@ -4045,38 +4145,43 @@ Example: 132`;
         }
 
         async function matchAnswerToDictionary(answerDataUrl) {
-            // Evaluates an answer choice against existing dictionary monsters using Smart Dict's multi-orientation perceptual hash matching
+            // Evaluates an answer choice against existing dictionary monsters using cached multi-orientation perceptual hash and color signatures
             if (!answerDataUrl || !dictionary || dictionary.length === 0) {
-                return { monster: null, sim: 0, candidates: [] };
+                return { monster: null, sim: 0, candidates: [], primaryHash: '' };
             }
 
             try {
-                // Compute multi-orientation pHashes (0°, 90°, 180°, 270°, flip) exactly like Smart Dict
-                const answerHashes = await computeMultiOrientationPHashes(answerDataUrl);
+                const answerFeatures = await getOrComputeImageFeatures(answerDataUrl);
+                if (!answerFeatures) return { monster: null, sim: 0, candidates: [], primaryHash: '' };
+
                 const candidates = [];
 
                 for (let entry of dictionary) {
+                    const entryFeatures = await getOrComputeEntryFeatures(entry);
                     let bestSim = 0;
 
-                    // 1. Check entry target hash across all orientations
-                    if (entry.targetHash) {
-                        for (let ah of answerHashes) {
-                            const sim = compareHashes(ah, entry.targetHash);
+                    // 1. Compare against known answer variants (highest fidelity)
+                    if (entryFeatures && entryFeatures.variantFeatures.length > 0) {
+                        for (let vFeat of entryFeatures.variantFeatures) {
+                            const hashSim = compareMultiHashes(answerFeatures.multiHashes, vFeat.primaryHash);
+                            const colorSim = compareColors(answerFeatures.color, vFeat.color);
+                            let sim = (hashSim * 0.82) + (colorSim * 0.18);
+                            // Severe color mismatch penalty
+                            if (colorSim < 25 && sim > 50) sim *= 0.72;
                             if (sim > bestSim) bestSim = sim;
                         }
                     }
 
-                    // 2. Check all known answer variant hashes across all orientations
-                    if (entry.answers && entry.answers.length > 0) {
-                        for (let ans of entry.answers) {
-                            const ansHash = typeof ans === 'string' ? '' : (ans.hash || '');
-                            if (ansHash) {
-                                for (let ah of answerHashes) {
-                                    const sim = compareHashes(ah, ansHash);
-                                    if (sim > bestSim) bestSim = sim;
-                                }
-                            }
-                        }
+                    // 2. Fallback: compare against target headshot (with slight discount vs real variants)
+                    if (entry.targetHash || entryFeatures?.targetFeatures) {
+                        const tHash = entry.targetHash || entryFeatures?.targetFeatures?.primaryHash;
+                        const hashSim = compareMultiHashes(answerFeatures.multiHashes, tHash);
+                        const colorSim = entryFeatures?.targetFeatures 
+                            ? compareColors(answerFeatures.color, entryFeatures.targetFeatures.color) 
+                            : 100;
+                        let sim = ((hashSim * 0.80) + (colorSim * 0.20)) * 0.90;
+                        if (colorSim < 25 && sim > 50) sim *= 0.72;
+                        if (sim > bestSim) bestSim = sim;
                     }
 
                     if (bestSim > 0) {
@@ -4087,24 +4192,47 @@ Example: 132`;
                 candidates.sort((a, b) => b.similarity - a.similarity);
 
                 // Smart Dict threshold: >= 48 is considered a valid match candidate
-                if (candidates.length === 0 || candidates[0].similarity < 48) {
-                    return {
-                        monster: null,
-                        sim: candidates[0]?.similarity || 0,
-                        candidates
-                    };
-                }
-
                 const top = candidates[0];
+                const isMatch = top && top.similarity >= 48;
+
                 return {
-                    monster: top.entry,
-                    sim: top.similarity,
-                    candidates
+                    monster: isMatch ? top.entry : null,
+                    sim: top?.similarity || 0,
+                    candidates,
+                    primaryHash: answerFeatures.primaryHash
                 };
             } catch (err) {
                 console.warn("Smart auto-match error:", err);
-                return { monster: null, sim: 0, candidates: [] };
+                return { monster: null, sim: 0, candidates: [], primaryHash: '' };
             }
+        }
+
+        function isVariantInDictionary(ansHash, targetMonsterId = null) {
+            if (!ansHash || !dictionary || dictionary.length === 0) return false;
+
+            // 1. Check if the matched monster already has this variant sprite
+            if (targetMonsterId) {
+                const monster = dictionary.find(m => m.id === targetMonsterId);
+                if (monster && monster.answers && monster.answers.length > 0) {
+                    for (let v of monster.answers) {
+                        const vHash = typeof v === 'string' ? '' : (v.hash || '');
+                        if (vHash) {
+                            if (vHash === ansHash || compareHashes(vHash, ansHash) >= 92) return true;
+                        }
+                    }
+                }
+            }
+
+            // 2. Check across entire dictionary for identical variant hash
+            for (let m of dictionary) {
+                if (m.answers && m.answers.length > 0) {
+                    for (let v of m.answers) {
+                        const vHash = typeof v === 'string' ? '' : (v.hash || '');
+                        if (vHash && (vHash === ansHash || compareHashes(vHash, ansHash) >= 94)) return true;
+                    }
+                }
+            }
+            return false;
         }
 
         async function handleBatchScreenshotFiles(event) {
@@ -4120,24 +4248,82 @@ Example: 132`;
             const subTitle = document.getElementById('batch-header-subtitle');
 
             if (processingIndicator) processingIndicator.style.display = 'block';
-            if (subTitle) subTitle.innerText = `Processing ${files.length} screenshots...`;
-
+            if (progressBar) progressBar.style.width = '0%';
             isBatchProcessing = true;
-            let processedItems = [];
+
+            // ─────────────────────────────────────────────────────────────
+            // PHASE 1: SCREENSHOT DUPLICATION CHECK (BEFORE MATCHING STARTS)
+            // ─────────────────────────────────────────────────────────────
+            if (subTitle) subTitle.innerText = `Scanning ${files.length} screenshots for duplicates...`;
+            if (progressText) progressText.innerText = `Pre-check: Scanning ${files.length} screenshots for duplicates...`;
+
+            const preloadedScreenshots = [];
+            const intraBatchSeen = new Set();
+            let intraDuplicatesCount = 0;
+            let alreadyUsedCount = 0;
 
             for (let i = 0; i < files.length; i++) {
                 const file = files[i];
-                const pct = Math.round(((i) / files.length) * 100);
+                const pct = Math.round(((i + 1) / files.length) * 22);
                 if (progressBar) progressBar.style.width = pct + '%';
-                if (progressText) progressText.innerText = `Smart matching screenshot ${i + 1} of ${files.length}: ${file.name}...`;
+                if (progressText) progressText.innerText = `Duplication pre-check ${i + 1} of ${files.length}: ${file.name}...`;
 
                 try {
                     const dataUrl = await readFileAsDataURL(file);
                     const sig = await computeScreenshotSignature(file, dataUrl);
+
+                    // Intra-batch duplicate check (same file name+size or exact signature in this selection)
+                    const fileKey = `${file.name}_${file.size}`;
+                    if (intraBatchSeen.has(fileKey) || intraBatchSeen.has(sig.id) || (sig.hash && intraBatchSeen.has(sig.hash))) {
+                        intraDuplicatesCount++;
+                        continue;
+                    }
+                    intraBatchSeen.add(fileKey);
+                    intraBatchSeen.add(sig.id);
+                    if (sig.hash) intraBatchSeen.add(sig.hash);
+
+                    // Check against screenshot audit history & existing dictionary
                     const existingAudit = checkScreenshotAudit(sig);
                     const isAuditDuplicate = !!existingAudit;
+                    if (isAuditDuplicate) alreadyUsedCount++;
 
-                    const img = await loadImage(dataUrl);
+                    preloadedScreenshots.push({
+                        file,
+                        dataUrl,
+                        sig,
+                        existingAudit,
+                        isAuditDuplicate
+                    });
+                } catch (readErr) {
+                    console.error("Pre-check error for:", file.name, readErr);
+                }
+            }
+
+            const uniqueCount = preloadedScreenshots.length;
+            let preCheckStatus = `Pre-check: ${uniqueCount} screenshot${uniqueCount === 1 ? '' : 's'}`;
+            if (intraDuplicatesCount > 0) preCheckStatus += ` (${intraDuplicatesCount} duplicates skipped)`;
+            if (alreadyUsedCount > 0) preCheckStatus += ` • ${alreadyUsedCount} previously used (only new variants will be added)`;
+            else preCheckStatus += ` • All new screenshots`;
+
+            if (progressText) progressText.innerText = preCheckStatus;
+            if (subTitle) subTitle.innerText = `${uniqueCount} unique screenshot${uniqueCount === 1 ? '' : 's'} verified. Starting matching...`;
+            if (progressBar) progressBar.style.width = '25%';
+
+            await new Promise(r => setTimeout(r, 450));
+
+            // ─────────────────────────────────────────────────────────────
+            // PHASE 2: SMART CROPPING & DICTIONARY MATCHING
+            // ─────────────────────────────────────────────────────────────
+            let processedItems = [];
+
+            for (let i = 0; i < preloadedScreenshots.length; i++) {
+                const item = preloadedScreenshots[i];
+                const pct = 25 + Math.round(((i + 1) / preloadedScreenshots.length) * 75);
+                if (progressBar) progressBar.style.width = pct + '%';
+                if (progressText) progressText.innerText = `Smart matching ${i + 1} of ${preloadedScreenshots.length}: ${item.file.name}${item.isAuditDuplicate ? ' [Previously Used]' : ''}...`;
+
+                try {
+                    const img = await loadImage(item.dataUrl);
 
                     // Crop A1 to A4
                     const answerCrops = await cropFromPositions(img, circleConfig.answers, 'answer');
@@ -4146,15 +4332,17 @@ Example: 132`;
                     const computedAnswers = [];
                     for (let aIdx = 0; aIdx < answerCrops.length; aIdx++) {
                         const crop = answerCrops[aIdx];
-                        const hash = await computePHash(crop.data);
-                        // Smart Dict multi-orientation match
+                        // Instant cached smart multi-orientation & color matching
                         const match = await matchAnswerToDictionary(crop.data);
+
+                        // Check if this variant is ALREADY in dictionary
+                        const alreadyInDict = isVariantInDictionary(match.primaryHash, match.monster?.id);
 
                         computedAnswers.push({
                             label: `A${aIdx + 1}`,
                             index: aIdx,
                             data: crop.data,
-                            hash,
+                            hash: match.primaryHash || '',
                             matchedMonster: match.monster ? {
                                 id: match.monster.id,
                                 name: match.monster.name,
@@ -4162,32 +4350,34 @@ Example: 132`;
                             } : null,
                             confidence: match.sim,
                             candidates: match.candidates || [],
-                            confirmed: match.monster !== null // default active if matched
+                            alreadyInDict,
+                            // If it's already in dictionary, default to unconfirmed so only new ones are added
+                            confirmed: match.monster !== null && !alreadyInDict
                         });
                     }
 
                     // Keep target crops for editing/reference
                     const computedTargets = [];
                     for (let t of targetCrops) {
-                        const hash = await computePHash(t.data);
-                        computedTargets.push({ ...t, hash });
+                        const feat = await getOrComputeImageFeatures(t.data);
+                        computedTargets.push({ ...t, hash: feat ? feat.primaryHash : '' });
                     }
 
                     processedItems.push({
                         id: 'batch_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-                        fileName: file.name,
-                        fileSize: file.size,
-                        dataUrl,
-                        sig,
-                        isAuditDuplicate,
-                        existingAudit,
+                        fileName: item.file.name,
+                        fileSize: item.file.size,
+                        dataUrl: item.dataUrl,
+                        sig: item.sig,
+                        isAuditDuplicate: item.isAuditDuplicate,
+                        existingAudit: item.existingAudit,
                         targetCrops: computedTargets,
                         answerCrops: computedAnswers,
                         status: 'pending'
                     });
 
                 } catch (err) {
-                    console.error("Batch processing error for:", file.name, err);
+                    console.error("Batch processing error for:", item.file.name, err);
                 }
             }
 
@@ -4200,7 +4390,7 @@ Example: 132`;
                 batchQueue.push(...processedItems);
                 isBatchProcessing = false;
                 renderBatchCards();
-            }, 400);
+            }, 350);
         }
 
         function readFileAsDataURL(file) {
@@ -4242,9 +4432,15 @@ Example: 132`;
 
             // Build Answers Matching Column (A1 to A4 with icon and matching monster icon below)
             let matchingColumnsHTML = "";
+            let newVariantsCount = 0;
+            let inDictVariantsCount = 0;
+
             currentItem.answerCrops.forEach((ans, aIdx) => {
                 const matched = ans.matchedMonster;
                 const isSelected = ans.confirmed !== false;
+                const inDict = !!ans.alreadyInDict;
+                if (inDict) inDictVariantsCount++;
+                else if (matched) newVariantsCount++;
 
                 let monsterDisplay = "";
                 if (matched && matched.image) {
@@ -4277,17 +4473,24 @@ Example: 132`;
                     `;
                 }
 
+                const statusTag = inDict
+                    ? `<div style="font-size:8px; font-weight:700; color:#94a3b8; background:rgba(148,163,184,0.18); border:1px solid rgba(148,163,184,0.3); border-radius:4px; padding:1px 4px; margin-top:3px;">In Dict</div>`
+                    : (matched ? `<div style="font-size:8px; font-weight:700; color:#4ade80; background:rgba(34,197,94,0.2); border:1px solid rgba(34,197,94,0.4); border-radius:4px; padding:1px 4px; margin-top:3px;">NEW</div>` : '');
+
                 matchingColumnsHTML += `
-                    <div style="display:flex; flex-direction:column; align-items:center; background:${isSelected ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.3)'}; padding:8px 6px; border-radius:12px; border:1px solid ${isSelected ? 'rgba(187,134,252,0.3)' : 'rgba(255,255,255,0.05)'}; flex:1; min-width:64px; cursor:pointer; transition:all 0.15s ease;" onclick="toggleBatchAnswerConfirm(${currentIndex}, ${aIdx})">
+                    <div style="display:flex; flex-direction:column; align-items:center; background:${isSelected ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.3)'}; padding:8px 6px; border-radius:12px; border:1px solid ${isSelected ? (inDict ? 'rgba(148,163,184,0.4)' : 'rgba(187,134,252,0.3)') : 'rgba(255,255,255,0.05)'}; flex:1; min-width:64px; cursor:pointer; transition:all 0.15s ease;" onclick="toggleBatchAnswerConfirm(${currentIndex}, ${aIdx})">
                         <!-- A1 to A4 badge & crop -->
                         <div style="font-size:10px; font-weight:700; color:#4ade80; margin-bottom:4px;">${ans.label}</div>
-                        <img src="${ans.data}" style="width:42px; height:42px; border-radius:50%; object-fit:cover; border:2px solid ${isSelected ? '#4ade80' : 'rgba(255,255,255,0.2)'}; background:#111;" />
+                        <img src="${ans.data}" style="width:42px; height:42px; border-radius:50%; object-fit:cover; border:2px solid ${isSelected ? (inDict ? '#94a3b8' : '#4ade80') : 'rgba(255,255,255,0.2)'}; background:#111;" />
                         
                         <!-- Down arrow indicator -->
-                        <div style="color:var(--text-secondary); font-size:11px; margin:4px 0 2px 0;">⬇</div>
+                        <div style="color:var(--text-secondary); font-size:11px; margin:3px 0 1px 0;">⬇</div>
                         
                         <!-- Matching monster (no names, clean icon) -->
                         ${monsterDisplay}
+
+                        <!-- In Dict / NEW status tag -->
+                        ${statusTag}
                     </div>
                 `;
             });
@@ -4296,8 +4499,19 @@ Example: 132`;
             let auditNotice = "";
             if (currentItem.isAuditDuplicate) {
                 auditNotice = `
-                    <div style="font-size:10px; color:#fca5a5; background:rgba(239,68,68,0.12); border-left:3px solid #ef4444; padding:5px 8px; border-radius:4px; margin-bottom:10px;">
-                        Notice: Previously uploaded screenshot. Confirming will add new/unregistered variants.
+                    <div style="font-size:11px; background:rgba(234,179,8,0.12); border:1px solid rgba(234,179,8,0.35); padding:8px 10px; border-radius:8px; margin-bottom:8px; display:flex; align-items:center; justify-content:space-between; gap:8px;">
+                        <div style="display:flex; align-items:center; gap:6px;">
+                            <span style="font-size:13px;">⚠️</span>
+                            <div>
+                                <div style="font-weight:700; color:#fde047;">Screenshot Already Used</div>
+                                <div style="font-size:10px; color:#cbd5e1; margin-top:1px;">
+                                    ${newVariantsCount > 0 ? `${newVariantsCount} new variant(s) detected. Confirming will only add unregistered ones.` : `All variants are already in dictionary. Confirming will safely finish this card.`}
+                                </div>
+                            </div>
+                        </div>
+                        <div style="font-size:9px; font-weight:700; color:#4ade80; background:rgba(34,197,94,0.15); border:1px solid rgba(34,197,94,0.3); padding:3px 8px; border-radius:6px; white-space:nowrap;">
+                            Can Confirm
+                        </div>
                     </div>
                 `;
             }
@@ -4346,51 +4560,89 @@ Example: 132`;
             renderBatchCards();
         }
 
+        let auditSyncTimeout = null;
+        function scheduleAuditSync() {
+            if (!db) return;
+            if (auditSyncTimeout) clearTimeout(auditSyncTimeout);
+            auditSyncTimeout = setTimeout(async () => {
+                try {
+                    const allRecords = Array.from(screenshotAuditMap.values()).slice(-200);
+                    await db.collection('config').doc('screenshotAudit').set({ records: allRecords }, { merge: true });
+                } catch (err) {
+                    console.warn("Throttled audit sync failed:", err);
+                }
+            }, 2500);
+        }
+
         async function batchConfirmCurrent(index) {
             const item = batchQueue[index];
             if (!item) return;
 
-            // Commit all matched & confirmed answer variants to their corresponding monsters
+            // Commit all matched & confirmed answer variants using an atomic batch to protect DB quota
             let savedCount = 0;
+            let skippedExistingCount = 0;
             const toast = showToast("Saving variants...", "syncing", 0);
 
             try {
+                const monsterUpdates = new Map();
                 for (let ans of item.answerCrops) {
                     if (!ans.confirmed || !ans.matchedMonster) continue;
 
                     const targetMonsterId = ans.matchedMonster.id;
-                    let monsterEntry = dictionary.find(m => m.id === targetMonsterId);
-
+                    const monsterEntry = dictionary.find(m => m.id === targetMonsterId);
                     if (!monsterEntry) continue;
 
-                    // Check if variant is already present
-                    const isDuplicate = monsterEntry.answers.some(existing => {
-                        const h = typeof existing === 'string' ? '' : existing.hash;
-                        return h && h === ans.hash;
+                    // Strictly check if variant is ALREADY present in this monster's dictionary entry
+                    const isAlreadyPresent = (monsterEntry.answers || []).some(existing => {
+                        const h = typeof existing === 'string' ? '' : (existing.hash || '');
+                        return h && (h === ans.hash || compareHashes(h, ans.hash) >= 92);
                     });
 
-                    if (!isDuplicate) {
-                        const newVariant = {
-                            data: ans.data,
-                            hash: ans.hash,
-                            position: { type: 'answer', index: ans.index }
-                        };
+                    if (isAlreadyPresent) {
+                        skippedExistingCount++;
+                        continue; // Strictly only add the ones that haven't been in the dictionary!
+                    }
 
-                        if (db && monsterEntry.id) {
-                            monsterEntry.answers.push(newVariant);
-                            await db.collection('dictionary').doc(monsterEntry.id).update({
-                                answers: monsterEntry.answers,
+                    if (!monsterUpdates.has(targetMonsterId)) {
+                        monsterUpdates.set(targetMonsterId, {
+                            entry: monsterEntry,
+                            newVariants: []
+                        });
+                    }
+                    monsterUpdates.get(targetMonsterId).newVariants.push({
+                        data: ans.data,
+                        hash: ans.hash,
+                        position: { type: 'answer', index: ans.index }
+                    });
+                    savedCount++;
+                }
+
+                if (monsterUpdates.size > 0) {
+                    if (db) {
+                        const batch = db.batch();
+                        for (let [mId, { entry, newVariants }] of monsterUpdates.entries()) {
+                            entry.answers = [...(entry.answers || []), ...newVariants];
+                            const docRef = db.collection('dictionary').doc(mId);
+                            batch.update(docRef, {
+                                answers: entry.answers,
                                 timestamp: Date.now()
                             });
-                        } else {
-                            monsterEntry.answers.push(newVariant);
-                            await saveDictionaryToStorage();
                         }
-                        savedCount++;
+                        await batch.commit();
+                    } else {
+                        for (let [mId, { entry, newVariants }] of monsterUpdates.entries()) {
+                            entry.answers = [...(entry.answers || []), ...newVariants];
+                        }
+                        await saveDictionaryToStorage();
+                    }
+
+                    // Invalidate feature index for updated entries so new variants are immediately indexed
+                    for (let mId of monsterUpdates.keys()) {
+                        dictFeatureIndex.delete(mId);
                     }
                 }
 
-                // Record screenshot audit signature
+                // Record screenshot audit signature with debounced DB write
                 if (item.sig) {
                     const auditRecord = {
                         id: item.sig.id,
@@ -4404,21 +4656,19 @@ Example: 132`;
                     try {
                         localStorage.setItem('screenshot_audit_cache', JSON.stringify(Array.from(screenshotAuditMap.entries()).slice(-200)));
                     } catch (e) {}
-
-                    if (db) {
-                        try {
-                            await db.collection('config').doc('screenshotAudit').set({
-                                records: Array.from(screenshotAuditMap.values()).slice(-200)
-                            }, { merge: true });
-                        } catch (e) {}
-                    }
+                    scheduleAuditSync();
                 }
 
                 // Remove from stack (pop)
                 batchQueue.splice(index, 1);
                 renderBatchCards();
                 renderDictionary();
-                showToast(`Saved ${savedCount} variant${savedCount === 1 ? '' : 's'}!`, "success", 2000);
+
+                if (savedCount > 0) {
+                    showToast(`Saved ${savedCount} new variant${savedCount === 1 ? '' : 's'}!${skippedExistingCount > 0 ? ` (${skippedExistingCount} existing skipped)` : ''}`, "success", 2400);
+                } else {
+                    showToast(`Card confirmed! (All variants already existed in dictionary)`, "info", 2400);
+                }
 
             } catch (err) {
                 console.error("Batch confirm current error:", err);
