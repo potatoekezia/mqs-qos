@@ -896,6 +896,11 @@
             <div style="display:flex; gap:10px; margin-bottom:10px">
                 <button class="btn" style="flex:1; background: linear-gradient(135deg, var(--accent) 0%, var(--accent-variant) 100%); color: white; box-shadow: 0 4px 15px rgba(187, 134, 252, 0.3); border: 1px solid rgba(255,255,255,0.1);" onclick="document.getElementById('dict-screenshot-input').click()">Upload Full Screenshot</button>
                 <input type="file" id="dict-screenshot-input" accept="image/*" class="hidden" onchange="handleDictScreenshot(event)">
+                <button type="button" class="btn btn-secondary" style="flex:1; margin:0; display:flex; align-items:center; justify-content:center; gap:6px; border-color:rgba(255,255,255,0.2);" onclick="document.getElementById('batch-upload-input').click()" title="Upload multiple screenshots at once to auto-match and confirm">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--accent);"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="m9 9 6 6m0-6-6 6"/><rect width="14" height="14" x="7" y="7" rx="1" fill="none"/></svg>
+                    <span>Batch Upload (Multi)</span>
+                </button>
+                <input type="file" id="batch-upload-input" accept="image/*" multiple class="hidden" onchange="handleBatchScreenshotFiles(event)">
             </div>
 
             <div id="dict-preview-container" class="hidden" style="margin-top:10px; text-align:center;">
@@ -1203,6 +1208,117 @@
             <div style="display:flex; gap:10px;">
                 <button type="button" class="btn btn-secondary" style="flex:1; margin:0; padding:10px; font-size:13px; border-color:rgba(255,255,255,0.2);" onclick="cancelAuditProceed()">Cancel</button>
                 <button type="button" class="btn" style="flex:1; margin:0; padding:10px; font-size:13px; background:linear-gradient(135deg, #f97316 0%, #ea580c 100%); color:#fff; font-weight:bold; box-shadow:0 4px 14px rgba(249,115,22,0.4);" onclick="confirmAuditProceed()">Proceed Anyway</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Batch Match & Review Modal (Dating App Card Stack Layout) -->
+    <div id="batch-review-modal" style="position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.92); z-index:3000; display:none; align-items:center; justify-content:center; padding:14px; backdrop-filter:blur(8px);" onclick="if(event.target === this) closeBatchModal()">
+        <div style="background:#18181b; border:1px solid rgba(187,134,252,0.35); box-shadow:0 16px 50px rgba(0,0,0,0.9); border-radius:20px; max-width:540px; width:100%; max-height:94vh; display:flex; flex-direction:column; overflow:hidden; color:#fff;">
+            <!-- Modal Header -->
+            <div style="padding:14px 20px; border-bottom:1px solid rgba(255,255,255,0.08); display:flex; justify-content:space-between; align-items:center; background:#1f1f23;">
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <div style="width:34px; height:34px; border-radius:50%; background:rgba(187,134,252,0.18); border:1px solid var(--accent); display:flex; align-items:center; justify-content:center; color:var(--accent);">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect width="18" height="18" x="3" y="3" rx="2"/><path d="m9 9 6 6m0-6-6 6"/><rect width="14" height="14" x="7" y="7" rx="1" fill="none"/>
+                        </svg>
+                    </div>
+                    <div>
+                        <h2 style="margin:0; font-size:15px; font-weight:700;">Batch Review & Confirm</h2>
+                        <div id="batch-header-subtitle" style="font-size:11px; color:#a1a1aa; margin-top:2px;">Auto-matching answer variants</div>
+                    </div>
+                </div>
+                <button type="button" class="btn btn-secondary" style="width:30px; height:30px; border-radius:50%; padding:0; display:flex; align-items:center; justify-content:center; margin:0;" onclick="closeBatchModal()">✕</button>
+            </div>
+
+            <!-- Processing / Progress Visual Feedback -->
+            <div id="batch-processing-indicator" style="display:none; padding:24px 20px; text-align:center; background:rgba(0,0,0,0.4); border-bottom:1px solid rgba(255,255,255,0.08);">
+                <div style="display:inline-block; width:36px; height:36px; border:3px solid rgba(187,134,252,0.25); border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; margin-bottom:12px;"></div>
+                <div id="batch-progress-text" style="font-size:13px; font-weight:600; color:#fff;">Analyzing screenshots...</div>
+                <div id="batch-progress-bar-container" style="width:80%; max-width:320px; height:6px; background:rgba(255,255,255,0.1); border-radius:3px; margin:10px auto 0; overflow:hidden;">
+                    <div id="batch-progress-bar" style="width:0%; height:100%; background:linear-gradient(90deg, var(--accent), var(--accent-variant)); transition:width 0.3s ease;"></div>
+                </div>
+            </div>
+
+            <!-- Top Stack Controls (Counter & Stack navigation) -->
+            <div id="batch-stack-controls" style="padding:10px 18px; background:rgba(255,255,255,0.02); border-bottom:1px solid rgba(255,255,255,0.06); display:flex; justify-content:space-between; align-items:center;">
+                <div id="batch-stack-counter" style="font-size:12px; font-weight:600; color:#a1a1aa;">
+                    Card 0 of 0
+                </div>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <button type="button" class="btn btn-secondary" style="width:auto; padding:3px 10px; font-size:11px; margin:0; border-color:rgba(187,134,252,0.3); color:#c084fc; display:flex; align-items:center; gap:4px;" onclick="batchReMatchStack()" title="Re-run smart dictionary auto-match on all pending cards">
+                        <span>⚡</span> Re-Match Stack
+                    </button>
+                    <button type="button" class="btn btn-secondary" style="width:auto; padding:3px 10px; font-size:11px; margin:0; border-color:rgba(255,255,255,0.2);" onclick="batchSkipCurrent()" title="Skip this card for now">
+                        Skip
+                    </button>
+                    <button type="button" class="btn btn-secondary" style="width:auto; padding:3px 10px; font-size:11px; margin:0; border-color:rgba(239,68,68,0.3); color:#f87171;" onclick="batchDiscardCurrent()" title="Discard this card">
+                        Discard
+                    </button>
+                </div>
+            </div>
+
+            <!-- Card Stack View Container -->
+            <div id="batch-cards-container" style="padding:16px 20px; overflow-y:auto; flex:1; display:flex; flex-direction:column; align-items:center; justify-content:flex-start;">
+                <!-- Current Card rendered here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Batch Edit / Correction Picker Modal -->
+    <div id="batch-edit-modal" style="position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.92); z-index:3500; display:none; align-items:center; justify-content:center; padding:16px; backdrop-filter:blur(8px);">
+        <div style="background:#18181b; border:1px solid rgba(255,255,255,0.2); box-shadow:0 12px 40px rgba(0,0,0,0.9); border-radius:16px; max-width:680px; width:100%; max-height:92vh; display:flex; flex-direction:column; overflow:hidden; color:#fff;">
+            <div style="padding:14px 20px; border-bottom:1px solid rgba(255,255,255,0.1); display:flex; justify-content:space-between; align-items:center; background:#202025;">
+                <h3 style="margin:0; font-size:15px; font-weight:700;">Edit & Calibrate Match</h3>
+                <button type="button" class="btn btn-secondary" style="width:30px; height:30px; border-radius:50%; padding:0; display:flex; align-items:center; justify-content:center; margin:0;" onclick="closeBatchEditModal()">✕</button>
+            </div>
+            
+            <div style="padding:16px 20px; overflow-y:auto; flex:1; display:flex; flex-direction:column; gap:14px;">
+                <div style="font-size:11px; color:#a1a1aa;">
+                    Click a circle to assign the target monster, and click answer circles to toggle which ones are added as variants.
+                </div>
+
+                <!-- Interactive Screenshot Layer -->
+                <div style="text-align:center; background:rgba(0,0,0,0.4); border-radius:8px; padding:6px; border:1px solid rgba(255,255,255,0.08);">
+                    <div class="preview-overlay-container" style="display:inline-block; position:relative;">
+                        <img id="batch-edit-img" style="max-height:280px; width:auto; border-radius:6px; display:block;">
+                        <div id="batch-edit-circles-layer"></div>
+                    </div>
+                </div>
+
+                <!-- Assigned Monster Selector (Icon-based Picker) -->
+                <div style="background:#27272a; padding:12px; border-radius:10px; border:1px solid rgba(255,255,255,0.08); display:flex; flex-direction:column; gap:10px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <div style="font-size:11px; font-weight:bold; color:var(--accent); text-transform:uppercase;">Assign To Monster:</div>
+                        <div id="batch-edit-selected-indicator" style="display:flex; align-items:center; gap:8px;">
+                            <span style="font-size:11px; color:#a1a1aa;">Current:</span>
+                            <img id="batch-edit-target-thumb" style="width:32px; height:32px; border-radius:50%; object-fit:cover; border:2px solid var(--accent); background:#111;">
+                        </div>
+                    </div>
+                    <div>
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                            <label style="font-size:10px; color:#a1a1aa;">Pick monster icon from dictionary:</label>
+                            <button type="button" class="btn btn-secondary" style="width:auto; padding:2px 8px; font-size:10px; margin:0; border-color:rgba(255,255,255,0.15);" onclick="onBatchEditClearMonster()">Clear Match</button>
+                        </div>
+                        <div id="batch-edit-monster-icons-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(44px, 1fr)); gap:8px; max-height:160px; overflow-y:auto; padding:8px; background:rgba(0,0,0,0.35); border-radius:8px; border:1px solid rgba(255,255,255,0.08);">
+                            <!-- Monster icon buttons rendered dynamically -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Selected Answers Preview -->
+                <div style="background:#27272a; padding:12px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">
+                    <div style="font-size:11px; font-weight:bold; color:#4ade80; text-transform:uppercase; margin-bottom:6px;">Selected Answer Variants:</div>
+                    <div id="batch-edit-answers-list" style="display:flex; gap:8px; flex-wrap:wrap; min-height:48px; align-items:center;">
+                        <!-- answers thumbnails -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Footer Save/Cancel -->
+            <div style="padding:12px 20px; border-top:1px solid rgba(255,255,255,0.1); display:flex; justify-content:flex-end; gap:10px; background:#202025;">
+                <button type="button" class="btn btn-secondary" style="width:auto; padding:8px 16px; margin:0; font-size:12px;" onclick="closeBatchEditModal()">Cancel</button>
+                <button type="button" class="btn" style="width:auto; padding:8px 20px; margin:0; font-size:12px; background:linear-gradient(135deg, var(--accent) 0%, var(--accent-variant) 100%); color:#fff; font-weight:bold;" onclick="saveBatchEditChanges()">Apply & Save to Card</button>
             </div>
         </div>
     </div>
@@ -3907,6 +4023,703 @@ Example: 132`;
         function closeImportPreview() {
             document.getElementById('import-preview-section').classList.add('hidden');
             document.getElementById('import-json-display').innerText = "";
+        }
+
+        // ==========================================
+        // --- BATCH SCREENSHOT PROCESSING & CARD STACK ---
+        // ==========================================
+        let batchQueue = []; // Processed batch items ready for stack review
+        let isBatchProcessing = false;
+        let activeBatchEditingIndex = -1;
+        let batchEditDraft = null;
+
+        function openBatchModal() {
+            const modal = document.getElementById('batch-review-modal');
+            if (modal) modal.style.display = 'flex';
+            renderBatchCards();
+        }
+
+        function closeBatchModal() {
+            const modal = document.getElementById('batch-review-modal');
+            if (modal) modal.style.display = 'none';
+        }
+
+        async function matchAnswerToDictionary(answerDataUrl) {
+            // Evaluates an answer choice against existing dictionary monsters using Smart Dict's multi-orientation perceptual hash matching
+            if (!answerDataUrl || !dictionary || dictionary.length === 0) {
+                return { monster: null, sim: 0, candidates: [] };
+            }
+
+            try {
+                // Compute multi-orientation pHashes (0°, 90°, 180°, 270°, flip) exactly like Smart Dict
+                const answerHashes = await computeMultiOrientationPHashes(answerDataUrl);
+                const candidates = [];
+
+                for (let entry of dictionary) {
+                    let bestSim = 0;
+
+                    // 1. Check entry target hash across all orientations
+                    if (entry.targetHash) {
+                        for (let ah of answerHashes) {
+                            const sim = compareHashes(ah, entry.targetHash);
+                            if (sim > bestSim) bestSim = sim;
+                        }
+                    }
+
+                    // 2. Check all known answer variant hashes across all orientations
+                    if (entry.answers && entry.answers.length > 0) {
+                        for (let ans of entry.answers) {
+                            const ansHash = typeof ans === 'string' ? '' : (ans.hash || '');
+                            if (ansHash) {
+                                for (let ah of answerHashes) {
+                                    const sim = compareHashes(ah, ansHash);
+                                    if (sim > bestSim) bestSim = sim;
+                                }
+                            }
+                        }
+                    }
+
+                    if (bestSim > 0) {
+                        candidates.push({ entry, similarity: bestSim });
+                    }
+                }
+
+                candidates.sort((a, b) => b.similarity - a.similarity);
+
+                // Smart Dict threshold: >= 48 is considered a valid match candidate
+                if (candidates.length === 0 || candidates[0].similarity < 48) {
+                    return {
+                        monster: null,
+                        sim: candidates[0]?.similarity || 0,
+                        candidates
+                    };
+                }
+
+                const top = candidates[0];
+                return {
+                    monster: top.entry,
+                    sim: top.similarity,
+                    candidates
+                };
+            } catch (err) {
+                console.warn("Smart auto-match error:", err);
+                return { monster: null, sim: 0, candidates: [] };
+            }
+        }
+
+        async function handleBatchScreenshotFiles(event) {
+            const files = Array.from(event.target.files || []);
+            event.target.value = "";
+            if (files.length === 0) return;
+
+            openBatchModal();
+
+            const processingIndicator = document.getElementById('batch-processing-indicator');
+            const progressText = document.getElementById('batch-progress-text');
+            const progressBar = document.getElementById('batch-progress-bar');
+            const subTitle = document.getElementById('batch-header-subtitle');
+
+            if (processingIndicator) processingIndicator.style.display = 'block';
+            if (subTitle) subTitle.innerText = `Processing ${files.length} screenshots...`;
+
+            isBatchProcessing = true;
+            let processedItems = [];
+
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const pct = Math.round(((i) / files.length) * 100);
+                if (progressBar) progressBar.style.width = pct + '%';
+                if (progressText) progressText.innerText = `Smart matching screenshot ${i + 1} of ${files.length}: ${file.name}...`;
+
+                try {
+                    const dataUrl = await readFileAsDataURL(file);
+                    const sig = await computeScreenshotSignature(file, dataUrl);
+                    const existingAudit = checkScreenshotAudit(sig);
+                    const isAuditDuplicate = !!existingAudit;
+
+                    const img = await loadImage(dataUrl);
+
+                    // Crop A1 to A4
+                    const answerCrops = await cropFromPositions(img, circleConfig.answers, 'answer');
+                    const targetCrops = await cropFromPositions(img, circleConfig.targets, 'target');
+
+                    const computedAnswers = [];
+                    for (let aIdx = 0; aIdx < answerCrops.length; aIdx++) {
+                        const crop = answerCrops[aIdx];
+                        const hash = await computePHash(crop.data);
+                        // Smart Dict multi-orientation match
+                        const match = await matchAnswerToDictionary(crop.data);
+
+                        computedAnswers.push({
+                            label: `A${aIdx + 1}`,
+                            index: aIdx,
+                            data: crop.data,
+                            hash,
+                            matchedMonster: match.monster ? {
+                                id: match.monster.id,
+                                name: match.monster.name,
+                                image: match.monster.targetImage || match.monster.target || (match.monster.answers?.[0]?.data || '')
+                            } : null,
+                            confidence: match.sim,
+                            candidates: match.candidates || [],
+                            confirmed: match.monster !== null // default active if matched
+                        });
+                    }
+
+                    // Keep target crops for editing/reference
+                    const computedTargets = [];
+                    for (let t of targetCrops) {
+                        const hash = await computePHash(t.data);
+                        computedTargets.push({ ...t, hash });
+                    }
+
+                    processedItems.push({
+                        id: 'batch_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+                        fileName: file.name,
+                        fileSize: file.size,
+                        dataUrl,
+                        sig,
+                        isAuditDuplicate,
+                        existingAudit,
+                        targetCrops: computedTargets,
+                        answerCrops: computedAnswers,
+                        status: 'pending'
+                    });
+
+                } catch (err) {
+                    console.error("Batch processing error for:", file.name, err);
+                }
+            }
+
+            if (progressBar) progressBar.style.width = '100%';
+            if (progressText) progressText.innerText = `Done! Loaded ${processedItems.length} card${processedItems.length > 1 ? 's' : ''}.`;
+
+            setTimeout(() => {
+                if (processingIndicator) processingIndicator.style.display = 'none';
+                if (subTitle) subTitle.innerText = `Confirm or Edit each card in the stack below.`;
+                batchQueue.push(...processedItems);
+                isBatchProcessing = false;
+                renderBatchCards();
+            }, 400);
+        }
+
+        function readFileAsDataURL(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = e => resolve(e.target.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
+        function renderBatchCards() {
+            const container = document.getElementById('batch-cards-container');
+            const counterEl = document.getElementById('batch-stack-counter');
+            if (!container) return;
+
+            const pending = batchQueue.filter(item => item.status === 'pending');
+
+            if (counterEl) {
+                counterEl.innerText = pending.length > 0 
+                    ? `Card 1 of ${pending.length} remaining`
+                    : `0 Cards in stack`;
+            }
+
+            if (pending.length === 0) {
+                container.innerHTML = `
+                    <div style="text-align:center; padding:48px 20px; color:#a1a1aa; font-size:13px; width:100%;">
+                        <div style="font-size:42px; margin-bottom:12px;">🎉</div>
+                        <div style="font-weight:700; color:#fff; font-size:16px; margin-bottom:6px;">Stack Complete!</div>
+                        <div>All batch screenshots have been reviewed and processed.</div>
+                    </div>
+                `;
+                return;
+            }
+
+            // Top of the stack is item 0
+            const currentItem = pending[0];
+            const currentIndex = batchQueue.indexOf(currentItem);
+
+            // Build Answers Matching Column (A1 to A4 with icon and matching monster icon below)
+            let matchingColumnsHTML = "";
+            currentItem.answerCrops.forEach((ans, aIdx) => {
+                const matched = ans.matchedMonster;
+                const isSelected = ans.confirmed !== false;
+
+                let monsterDisplay = "";
+                if (matched && matched.image) {
+                    let badgeColor = '#c084fc';
+                    let borderColor = '#a855f7';
+                    const conf = typeof ans.confidence === 'number' ? ans.confidence : 0;
+                    if (conf >= 75) {
+                        badgeColor = '#4ade80';
+                        borderColor = '#22c55e';
+                    } else if (conf >= 60) {
+                        badgeColor = '#facc15';
+                        borderColor = '#eab308';
+                    } else if (conf >= 48) {
+                        badgeColor = '#fb923c';
+                        borderColor = '#f97316';
+                    }
+
+                    monsterDisplay = `
+                        <div style="display:flex; flex-direction:column; align-items:center; gap:2px; margin-top:2px;" onclick="openBatchEditModal(${currentIndex}, ${aIdx}); event.stopPropagation();">
+                            <img src="${matched.image}" style="width:36px; height:36px; border-radius:50%; object-fit:cover; border:2px solid ${borderColor}; background:#111;" title="${matched.name || 'Monster'} (${conf.toFixed(0)}% match) - Click to change" />
+                            <div style="font-size:9px; color:${badgeColor}; font-weight:700; max-width:60px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:center;">${conf > 0 ? conf.toFixed(0) + '%' : 'Matched'}</div>
+                        </div>
+                    `;
+                } else {
+                    monsterDisplay = `
+                        <div style="display:flex; flex-direction:column; align-items:center; gap:2px; margin-top:2px;" onclick="openBatchEditModal(${currentIndex}, ${aIdx}); event.stopPropagation();">
+                            <div style="width:36px; height:36px; border-radius:50%; border:1.5px dashed rgba(255,255,255,0.25); display:flex; align-items:center; justify-content:center; color:#71717a; font-size:14px; cursor:pointer;" title="No direct match - click to assign">?</div>
+                            <div style="font-size:9px; color:#71717a;">Unmatched</div>
+                        </div>
+                    `;
+                }
+
+                matchingColumnsHTML += `
+                    <div style="display:flex; flex-direction:column; align-items:center; background:${isSelected ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.3)'}; padding:8px 6px; border-radius:12px; border:1px solid ${isSelected ? 'rgba(187,134,252,0.3)' : 'rgba(255,255,255,0.05)'}; flex:1; min-width:64px; cursor:pointer; transition:all 0.15s ease;" onclick="toggleBatchAnswerConfirm(${currentIndex}, ${aIdx})">
+                        <!-- A1 to A4 badge & crop -->
+                        <div style="font-size:10px; font-weight:700; color:#4ade80; margin-bottom:4px;">${ans.label}</div>
+                        <img src="${ans.data}" style="width:42px; height:42px; border-radius:50%; object-fit:cover; border:2px solid ${isSelected ? '#4ade80' : 'rgba(255,255,255,0.2)'}; background:#111;" />
+                        
+                        <!-- Down arrow indicator -->
+                        <div style="color:var(--text-secondary); font-size:11px; margin:4px 0 2px 0;">⬇</div>
+                        
+                        <!-- Matching monster (no names, clean icon) -->
+                        ${monsterDisplay}
+                    </div>
+                `;
+            });
+
+            // Audit notice
+            let auditNotice = "";
+            if (currentItem.isAuditDuplicate) {
+                auditNotice = `
+                    <div style="font-size:10px; color:#fca5a5; background:rgba(239,68,68,0.12); border-left:3px solid #ef4444; padding:5px 8px; border-radius:4px; margin-bottom:10px;">
+                        Notice: Previously uploaded screenshot. Confirming will add new/unregistered variants.
+                    </div>
+                `;
+            }
+
+            container.innerHTML = `
+                <div style="width:100%; max-width:440px; background:#202024; border:1px solid rgba(255,255,255,0.12); box-shadow:0 8px 30px rgba(0,0,0,0.6); border-radius:18px; padding:16px; display:flex; flex-direction:column; gap:14px; position:relative;">
+                    
+                    ${auditNotice}
+
+                    <!-- 1. The Full Screenshot Display (Dating Card Top) -->
+                    <div style="width:100%; border-radius:12px; overflow:hidden; background:#000; border:1px solid rgba(255,255,255,0.08); text-align:center; position:relative;">
+                        <img src="${currentItem.dataUrl}" style="width:100%; max-height:230px; object-fit:contain; display:block;" />
+                        <div style="position:absolute; bottom:6px; left:8px; background:rgba(0,0,0,0.65); backdrop-filter:blur(4px); font-size:10px; color:#d4d4d8; padding:2px 8px; border-radius:4px; max-width:85%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                            ${currentItem.fileName}
+                        </div>
+                    </div>
+
+                    <!-- 2. Matching Results Under Photo: Icon of A1 to A4, ⬇, Matching Monster below -->
+                    <div style="display:flex; flex-direction:column; gap:6px;">
+                        <div style="font-size:11px; font-weight:700; color:#a1a1aa; text-transform:uppercase; letter-spacing:0.5px;">Auto-Matched Variants:</div>
+                        <div style="display:flex; justify-content:space-between; gap:6px; width:100%;">
+                            ${matchingColumnsHTML}
+                        </div>
+                    </div>
+
+                    <!-- 3. Edit & Confirm Buttons Under Results (Edit on Left, Confirm on Right) -->
+                    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:4px; padding-top:10px; border-top:1px solid rgba(255,255,255,0.08);">
+                        <button type="button" class="btn btn-secondary" style="flex:1; margin:0; padding:10px; font-size:13px; font-weight:600; display:flex; align-items:center; justify-content:center; gap:6px; border-color:rgba(255,255,255,0.2);" onclick="openBatchEditModal(${currentIndex})">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                            Edit Match
+                        </button>
+                        <button type="button" class="btn" style="flex:1.2; margin:0; padding:10px; font-size:13px; font-weight:700; background:linear-gradient(135deg, #10b981 0%, #059669 100%); color:#fff; box-shadow:0 4px 14px rgba(16,185,129,0.35); display:flex; align-items:center; justify-content:center; gap:6px;" onclick="batchConfirmCurrent(${currentIndex})">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                            Confirm
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        function toggleBatchAnswerConfirm(cardIndex, answerIndex) {
+            const item = batchQueue[cardIndex];
+            if (!item || !item.answerCrops[answerIndex]) return;
+            const ans = item.answerCrops[answerIndex];
+            ans.confirmed = !ans.confirmed;
+            renderBatchCards();
+        }
+
+        async function batchConfirmCurrent(index) {
+            const item = batchQueue[index];
+            if (!item) return;
+
+            // Commit all matched & confirmed answer variants to their corresponding monsters
+            let savedCount = 0;
+            const toast = showToast("Saving variants...", "syncing", 0);
+
+            try {
+                for (let ans of item.answerCrops) {
+                    if (!ans.confirmed || !ans.matchedMonster) continue;
+
+                    const targetMonsterId = ans.matchedMonster.id;
+                    let monsterEntry = dictionary.find(m => m.id === targetMonsterId);
+
+                    if (!monsterEntry) continue;
+
+                    // Check if variant is already present
+                    const isDuplicate = monsterEntry.answers.some(existing => {
+                        const h = typeof existing === 'string' ? '' : existing.hash;
+                        return h && h === ans.hash;
+                    });
+
+                    if (!isDuplicate) {
+                        const newVariant = {
+                            data: ans.data,
+                            hash: ans.hash,
+                            position: { type: 'answer', index: ans.index }
+                        };
+
+                        if (db && monsterEntry.id) {
+                            monsterEntry.answers.push(newVariant);
+                            await db.collection('dictionary').doc(monsterEntry.id).update({
+                                answers: monsterEntry.answers,
+                                timestamp: Date.now()
+                            });
+                        } else {
+                            monsterEntry.answers.push(newVariant);
+                            await saveDictionaryToStorage();
+                        }
+                        savedCount++;
+                    }
+                }
+
+                // Record screenshot audit signature
+                if (item.sig) {
+                    const auditRecord = {
+                        id: item.sig.id,
+                        fileName: item.sig.fileName,
+                        monsterName: 'Batch Multi-Match',
+                        hash: item.sig.hash,
+                        size: item.sig.size,
+                        timestamp: Date.now()
+                    };
+                    screenshotAuditMap.set(item.sig.id, auditRecord);
+                    try {
+                        localStorage.setItem('screenshot_audit_cache', JSON.stringify(Array.from(screenshotAuditMap.entries()).slice(-200)));
+                    } catch (e) {}
+
+                    if (db) {
+                        try {
+                            await db.collection('config').doc('screenshotAudit').set({
+                                records: Array.from(screenshotAuditMap.values()).slice(-200)
+                            }, { merge: true });
+                        } catch (e) {}
+                    }
+                }
+
+                // Remove from stack (pop)
+                batchQueue.splice(index, 1);
+                renderBatchCards();
+                renderDictionary();
+                showToast(`Saved ${savedCount} variant${savedCount === 1 ? '' : 's'}!`, "success", 2000);
+
+            } catch (err) {
+                console.error("Batch confirm current error:", err);
+                showToast("Failed to save: " + err.message, "error");
+            } finally {
+                toast.remove();
+            }
+        }
+
+        function batchSkipCurrent() {
+            const pending = batchQueue.filter(item => item.status === 'pending');
+            if (pending.length <= 1) return;
+            // Move top item to the back of the queue
+            const item = pending[0];
+            const realIdx = batchQueue.indexOf(item);
+            batchQueue.splice(realIdx, 1);
+            batchQueue.push(item);
+            renderBatchCards();
+            showToast("Skipped to end of stack", "info", 1200);
+        }
+
+        function batchDiscardCurrent() {
+            const pending = batchQueue.filter(item => item.status === 'pending');
+            if (pending.length === 0) return;
+            const item = pending[0];
+            const realIdx = batchQueue.indexOf(item);
+            batchQueue.splice(realIdx, 1);
+            renderBatchCards();
+            showToast("Card discarded", "info", 1500);
+        }
+
+        async function batchReMatchStack() {
+            const pending = batchQueue.filter(item => item.status === 'pending');
+            if (pending.length === 0) {
+                showToast("No pending cards in stack to re-match.", "info");
+                return;
+            }
+            if (!dictionary || dictionary.length === 0) {
+                showToast("Dictionary is empty.", "warning");
+                return;
+            }
+
+            const toast = showToast(`Re-matching ${pending.length} card${pending.length > 1 ? 's' : ''} with Smart Dictionary...`, "syncing", 0);
+            try {
+                for (let item of pending) {
+                    for (let ans of item.answerCrops) {
+                        const match = await matchAnswerToDictionary(ans.data);
+                        ans.confidence = match.sim;
+                        ans.candidates = match.candidates || [];
+                        if (match.monster) {
+                            ans.matchedMonster = {
+                                id: match.monster.id,
+                                name: match.monster.name,
+                                image: match.monster.targetImage || match.monster.target || (match.monster.answers?.[0]?.data || '')
+                            };
+                            ans.confirmed = true;
+                        } else {
+                            ans.matchedMonster = null;
+                            ans.confirmed = false;
+                        }
+                    }
+                }
+                renderBatchCards();
+                showToast(`Stack auto-matched with Smart Dictionary!`, "success", 2000);
+            } catch (err) {
+                console.error("Re-match stack error:", err);
+                showToast("Failed to re-match stack: " + err.message, "error");
+            } finally {
+                toast.remove();
+            }
+        }
+
+        // ==========================================
+        // --- BATCH EDIT / CORRECTION PICKER MODAL ---
+        // ==========================================
+        let editingAnswerIndex = 0;
+
+        function openBatchEditModal(cardIndex, answerIdx = 0) {
+            activeBatchEditingIndex = cardIndex;
+            editingAnswerIndex = answerIdx;
+            const item = batchQueue[cardIndex];
+            if (!item) return;
+
+            // Clone draft for editing
+            batchEditDraft = {
+                dataUrl: item.dataUrl,
+                answerCrops: JSON.parse(JSON.stringify(item.answerCrops)),
+                targetCrops: item.targetCrops
+            };
+
+            const modal = document.getElementById('batch-edit-modal');
+            const img = document.getElementById('batch-edit-img');
+
+            img.onload = () => renderBatchEditCircles();
+            img.src = batchEditDraft.dataUrl;
+
+            selectBatchEditActiveAnswer(editingAnswerIndex);
+
+            if (modal) modal.style.display = 'flex';
+        }
+
+        function closeBatchEditModal() {
+            const modal = document.getElementById('batch-edit-modal');
+            if (modal) modal.style.display = 'none';
+            batchEditDraft = null;
+            activeBatchEditingIndex = -1;
+        }
+
+        function selectBatchEditActiveAnswer(idx) {
+            if (!batchEditDraft || !batchEditDraft.answerCrops[idx]) return;
+            editingAnswerIndex = idx;
+            const ans = batchEditDraft.answerCrops[idx];
+            const thumb = document.getElementById('batch-edit-target-thumb');
+
+            if (thumb) thumb.src = ans.matchedMonster?.image || ans.data;
+
+            renderBatchEditMonsterIcons();
+            renderBatchEditAnswersList();
+            renderBatchEditCircles();
+        }
+
+        function renderBatchEditMonsterIcons() {
+            const container = document.getElementById('batch-edit-monster-icons-grid');
+            if (!container || !batchEditDraft) return;
+
+            container.innerHTML = "";
+            const currentAns = batchEditDraft.answerCrops[editingAnswerIndex];
+            if (!currentAns) return;
+            const currentSelectedId = currentAns?.matchedMonster?.id;
+
+            if (!dictionary || dictionary.length === 0) {
+                container.innerHTML = `<div style="grid-column:1/-1; font-size:11px; color:#71717a; text-align:center; padding:12px;">No monsters found in dictionary.</div>`;
+                return;
+            }
+
+            // Build similarity map for current answer crop using Smart Dict candidates
+            const simMap = new Map();
+            if (currentAns.candidates && currentAns.candidates.length > 0) {
+                currentAns.candidates.forEach(c => simMap.set(c.entry.id, c.similarity));
+            }
+
+            // Sort monsters: highest similarity first, followed by alphabetical
+            const sorted = [...dictionary].sort((a, b) => {
+                const simA = simMap.get(a.id) || 0;
+                const simB = simMap.get(b.id) || 0;
+                if (simB !== simA) return simB - simA;
+                return (a.name || '').localeCompare(b.name || '');
+            });
+
+            sorted.forEach(m => {
+                const imgUrl = m.targetImage || m.target || (m.answers?.[0]?.data || '');
+                if (!imgUrl) return;
+
+                const isSelected = currentSelectedId === m.id;
+                const sim = simMap.get(m.id) || 0;
+
+                let badgeColor = '';
+                let badgeText = '';
+                if (sim >= 75) {
+                    badgeColor = '#22c55e';
+                    badgeText = `${sim.toFixed(0)}%`;
+                } else if (sim >= 60) {
+                    badgeColor = '#eab308';
+                    badgeText = `${sim.toFixed(0)}%`;
+                } else if (sim >= 48) {
+                    badgeColor = '#f97316';
+                    badgeText = `${sim.toFixed(0)}%`;
+                }
+
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                const borderColor = isSelected 
+                    ? '2.5px solid var(--accent)' 
+                    : (badgeColor ? `2px solid ${badgeColor}` : '1.5px solid rgba(255,255,255,0.18)');
+                const shadow = isSelected 
+                    ? '0 0 12px rgba(187,134,252,0.6)' 
+                    : (sim >= 75 ? `0 0 10px rgba(34,197,94,0.4)` : 'none');
+
+                btn.style = `width:46px; height:46px; border-radius:50%; padding:0; background:#111; cursor:pointer; display:flex; align-items:center; justify-content:center; position:relative; transition:all 0.15s ease; border:${borderColor}; transform:${isSelected ? 'scale(1.12)' : 'scale(1)'}; box-shadow:${shadow};`;
+                btn.title = `${m.name || 'Monster'} ${sim > 0 ? `(${sim.toFixed(0)}% match)` : ''}`;
+                btn.onclick = () => onBatchEditSelectMonsterIcon(m.id, sim);
+
+                btn.innerHTML = `<img src="${imgUrl}" style="width:100%; height:100%; border-radius:50%; object-fit:cover; display:block;" />`;
+
+                if (isSelected) {
+                    const check = document.createElement('div');
+                    check.style = `position:absolute; bottom:-3px; right:-3px; background:var(--accent); color:#000; border-radius:50%; width:15px; height:15px; font-size:9px; font-weight:bold; display:flex; align-items:center; justify-content:center; border:1px solid #000; z-index:2;`;
+                    check.innerText = '✓';
+                    btn.appendChild(check);
+                } else if (badgeText) {
+                    const tag = document.createElement('div');
+                    tag.style = `position:absolute; bottom:-3px; right:-3px; background:${badgeColor}; color:#000; border-radius:6px; padding:0 3px; font-size:8px; font-weight:bold; border:1px solid #000; z-index:2; line-height:12px;`;
+                    tag.innerText = badgeText;
+                    btn.appendChild(tag);
+                }
+
+                container.appendChild(btn);
+            });
+        }
+
+        function onBatchEditSelectMonsterIcon(monsterId, sim = null) {
+            if (!batchEditDraft) return;
+            const currentAns = batchEditDraft.answerCrops[editingAnswerIndex];
+            if (!currentAns) return;
+
+            const thumb = document.getElementById('batch-edit-target-thumb');
+            const found = dictionary.find(m => m.id === monsterId);
+
+            if (found) {
+                currentAns.matchedMonster = {
+                    id: found.id,
+                    name: found.name,
+                    image: found.targetImage || found.target || (found.answers?.[0]?.data || '')
+                };
+                currentAns.confirmed = true;
+                if (sim !== null && sim > 0) currentAns.confidence = sim;
+                if (thumb) thumb.src = currentAns.matchedMonster.image;
+            }
+
+            renderBatchEditMonsterIcons();
+            renderBatchEditAnswersList();
+        }
+
+        function onBatchEditClearMonster() {
+            if (!batchEditDraft) return;
+            const currentAns = batchEditDraft.answerCrops[editingAnswerIndex];
+            if (!currentAns) return;
+
+            const thumb = document.getElementById('batch-edit-target-thumb');
+            currentAns.matchedMonster = null;
+            currentAns.confirmed = false;
+            if (thumb) thumb.src = currentAns.data;
+
+            renderBatchEditMonsterIcons();
+            renderBatchEditAnswersList();
+        }
+
+        function renderBatchEditCircles() {
+            const container = document.getElementById('batch-edit-circles-layer');
+            const img = document.getElementById('batch-edit-img');
+            if (!container || !img || !batchEditDraft) return;
+
+            container.innerHTML = "";
+            const rect = img.getBoundingClientRect();
+            if (rect.width === 0 || img.naturalWidth === 0) return;
+
+            const scaleX = rect.width / img.naturalWidth;
+            const scaleY = rect.height / img.naturalHeight;
+
+            // Render Answer markers
+            circleConfig.answers.forEach((a, i) => {
+                const circle = document.createElement('div');
+                const isSelected = editingAnswerIndex === i;
+                circle.className = `preview-circle answer clickable`;
+                circle.style.width = (a.radius * 2 * scaleX) + 'px';
+                circle.style.height = (a.radius * 2 * scaleY) + 'px';
+                circle.style.left = (a.x * scaleX) + 'px';
+                circle.style.top = (a.y * scaleY) + 'px';
+                circle.style.border = isSelected ? '3px solid #10b981' : '2px dashed rgba(74,222,128,0.5)';
+                circle.style.backgroundColor = isSelected ? 'rgba(16,185,129,0.3)' : 'transparent';
+                circle.title = `Click to calibrate Answer A${i + 1}`;
+                circle.onclick = () => selectBatchEditActiveAnswer(i);
+                container.appendChild(circle);
+            });
+        }
+
+        function renderBatchEditAnswersList() {
+            const list = document.getElementById('batch-edit-answers-list');
+            if (!list || !batchEditDraft) return;
+            list.innerHTML = "";
+
+            batchEditDraft.answerCrops.forEach((ans, aIdx) => {
+                const isSelected = editingAnswerIndex === aIdx;
+                const item = document.createElement('div');
+                item.style = `position:relative; display:inline-flex; flex-direction:column; align-items:center; padding:4px 6px; border-radius:8px; cursor:pointer; background:${isSelected ? 'rgba(187,134,252,0.2)' : 'transparent'}; border:1px solid ${isSelected ? 'var(--accent)' : 'transparent'};`;
+                item.onclick = () => selectBatchEditActiveAnswer(aIdx);
+                
+                const matchedImg = ans.matchedMonster?.image 
+                    ? `<img src="${ans.matchedMonster.image}" style="width:24px; height:24px; border-radius:50%; object-fit:cover; border:1px solid #c084fc; margin-top:2px;" />` 
+                    : `<span style="font-size:9px; color:#71717a; margin-top:2px;">None</span>`;
+
+                item.innerHTML = `
+                    <span style="font-size:10px; font-weight:bold; color:#4ade80;">${ans.label}</span>
+                    <img src="${ans.data}" style="width:36px; height:36px; border-radius:50%; object-fit:cover; border:2px solid ${ans.confirmed ? '#4ade80' : '#71717a'};" />
+                    <span style="font-size:8px; color:#a1a1aa; margin-top:1px;">⬇</span>
+                    ${matchedImg}
+                `;
+                list.appendChild(item);
+            });
+        }
+
+        function saveBatchEditChanges() {
+            if (activeBatchEditingIndex < 0 || !batchEditDraft) return;
+            const item = batchQueue[activeBatchEditingIndex];
+            if (!item) return;
+
+            item.answerCrops = JSON.parse(JSON.stringify(batchEditDraft.answerCrops));
+
+            closeBatchEditModal();
+            renderBatchCards();
+            showToast("Match corrected & updated!", "success", 1800);
         }
     </script>
 </body>
