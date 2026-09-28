@@ -1705,10 +1705,16 @@
 
                 const unsubDict = db.collection('dictionary').onSnapshot(snapshot => {
                     const newDict = [];
+                    const bloatedDocsToPrune = [];
                     snapshot.forEach(doc => {
                         if (doc.id === 'v1_data') return;
                         const entry = doc.data();
                         entry.id = doc.id;
+                        // Check if document contains legacy full screenshot that pushes it toward the 1MB Firestore limit
+                        if (entry.originalScreenshot) {
+                            bloatedDocsToPrune.push(doc.ref);
+                            delete entry.originalScreenshot;
+                        }
                         if (entry.target && !entry.targetImage) entry.targetImage = entry.target;
                         if (entry.answers) {
                             entry.answers = entry.answers.map(a => typeof a === 'string' ? { data: a, hash: '' } : a);
@@ -1721,6 +1727,11 @@
                         localStorage.setItem('dictionary_cache', JSON.stringify({ version: 1, entries: dictionary, updatedAt: Date.now() }));
                     } catch (e) {}
                     showToast("Dictionary synced", "success");
+
+                    // Automatically prune oversized legacy fields to fix document limit errors
+                    if (bloatedDocsToPrune.length > 0) {
+                        pruneBloatedDocuments(bloatedDocsToPrune);
+                    }
                 }, (error) => { showToast("Dictionary sync error", "error"); });
                 activeDbListeners.push(unsubDict);
 
@@ -1868,6 +1879,26 @@
             a.href = url; a.download = `firebase-config-${projectId || 'app'}.json`;
             document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
             showToast("Firebase configuration exported!", "success");
+        }
+
+        async function pruneBloatedDocuments(docRefs) {
+            if (!db || !docRefs || docRefs.length === 0) return;
+            try {
+                for (let i = 0; i < docRefs.length; i += 400) {
+                    const chunk = docRefs.slice(i, i + 400);
+                    const batch = db.batch();
+                    for (let ref of chunk) {
+                        batch.update(ref, {
+                            originalScreenshot: firebase.firestore.FieldValue.delete()
+                        });
+                    }
+                    await batch.commit();
+                }
+                console.log(`Repaired ${docRefs.length} oversized document(s) in Firestore.`);
+                showToast(`Repaired ${docRefs.length} oversized cloud document${docRefs.length === 1 ? '' : 's'}!`, "success", 3000);
+            } catch (err) {
+                console.warn("Failed to prune bloated documents:", err);
+            }
         }
 
         async function importFirebaseConfig(event) {
@@ -2300,7 +2331,7 @@
             const ctx = canvas.getContext('2d');
             for (let i = 0; i < positions.length; i++) {
                 const pos = positions[i];
-                const targetSize = 200;
+                const targetSize = 120; // Optimized size for high quality avatar display and lightweight document payload
                 canvas.width = targetSize; canvas.height = targetSize;
                 ctx.clearRect(0, 0, targetSize, targetSize);
                 ctx.save();
@@ -3062,32 +3093,27 @@ Example: 132`;
             try {
                 for (let i = 0; i < dictionary.length; i++) {
                     const entry = dictionary[i];
-                    if (entry.originalScreenshot) {
-                        btn.innerText = `Rebuilding (${i+1}/${dictionary.length})...`;
-                        const img = await loadImage(entry.originalScreenshot);
-                        const targetPos = entry.targetPosition || entry.position || { type: 'target', index: 0 };
-                        const targetCrops = await cropFromPositions(img, [circleConfig.targets[targetPos.index]], 'target');
-                        const target = targetCrops[0];
-                        entry.targetImage = target.data;
-                        entry.targetHash = await computePHash(target.data);
-                        if (entry.answers && entry.answers.length > 0) {
-                            for (let ansEntry of entry.answers) {
-                                if (ansEntry.position) {
-                                    const ansCrops = await cropFromPositions(img, [circleConfig.answers[ansEntry.position.index]], 'answer');
-                                    ansEntry.data = ansCrops[0].data;
-                                    ansEntry.hash = await computePHash(ansCrops[0].data);
-                                }
+                    btn.innerText = `Rebuilding (${i+1}/${dictionary.length})...`;
+                    if (entry.targetImage) {
+                        entry.targetHash = await computePHash(entry.targetImage);
+                    }
+                    if (entry.answers && entry.answers.length > 0) {
+                        for (let ansEntry of entry.answers) {
+                            const ansData = typeof ansEntry === 'string' ? ansEntry : ansEntry.data;
+                            if (ansData) {
+                                const h = await computePHash(ansData);
+                                if (typeof ansEntry === 'object') ansEntry.hash = h;
                             }
                         }
-                        updatedCount++;
                     }
+                    updatedCount++;
                 }
                 if (updatedCount > 0) {
                     await saveDictionaryToStorage();
                     alert(`Rebuild complete! Updated ${updatedCount} entries.`);
                     renderDictionary();
                 } else {
-                    alert("No entries with original screenshots found to update.");
+                    alert("No entries found to update.");
                 }
             } catch (err) {
                 alert("Rebuild failed: " + err.message);
@@ -3425,7 +3451,6 @@ Example: 132`;
                     targetHash,
                     targetPosition: dictTargetCrop.position,
                     answers: answerEntries,
-                    originalScreenshot: dictScreenshot,
                     timestamp: Date.now()
                 };
                 if (db) {
@@ -3439,7 +3464,11 @@ Example: 132`;
                             const newAnswers = entry.answers.filter(newAns => !existingEntry.answers.some(oldAns => (oldAns.hash || oldAns) === newAns.hash));
                             if (newAnswers.length > 0) {
                                 const mergedAnswers = [...existingEntry.answers, ...newAnswers];
-                                await db.collection('dictionary').doc(existingEntry.id).update({ answers: mergedAnswers, timestamp: Date.now() });
+                                await db.collection('dictionary').doc(existingEntry.id).update({
+                                    answers: mergedAnswers,
+                                    originalScreenshot: firebase.firestore.FieldValue.delete(),
+                                    timestamp: Date.now()
+                                });
                                 showToast(`Added ${newAnswers.length} variants to cloud`, "success");
                             } else {
                                 showToast("Already in dictionary.", "info");
@@ -4625,6 +4654,7 @@ Example: 132`;
                             const docRef = db.collection('dictionary').doc(mId);
                             batch.update(docRef, {
                                 answers: entry.answers,
+                                originalScreenshot: firebase.firestore.FieldValue.delete(), // ensure bloated legacy full screenshots are pruned
                                 timestamp: Date.now()
                             });
                         }
